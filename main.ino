@@ -1,14 +1,14 @@
-// ESP32 + RLS-08 + TB6612FNG
-// White line on black surface
-// A1 = LEFT, A8 = RIGHT
+const int sensorPins[8]={36,39,34,35,32,33,25,26};
 
-const int sensorPins[8] = {36,39,34,35,32,33,25,26};
+const int whiteReading[8]={65,53,231,56,66,754,323,94};
+const int blackReading[8]={3154,2931,3594,2757,3037,3694,2724,2967};
 
-const int whiteReading[8] = {65,53,231,56,66,754,323,94};
-const int blackReading[8] = {3154,2931,3594,2757,3037,3694,2724,2967};
-
-const int PWMA=27,AIN1=14,AIN2=13;
-const int PWMB=23,BIN1=18,BIN2=19;
+const int PWMA=27;
+const int AIN1=14;
+const int AIN2=13;
+const int PWMB=23;
+const int BIN1=18;
+const int BIN2=19;
 const int STBY=21;
 
 const bool LEFT_MOTOR_REVERSED=true;
@@ -19,27 +19,26 @@ const int PWM_BITS=12;
 const int PWM_MAX=4095;
 
 const int BASE_SPEED=1600;
+const float RIGHT_MOTOR_GAIN=1.60f;
 
-const float RIGHT_MOTOR_GAIN=1.15f;
-
-const int TURN_INNER=500;
-const int TURN_OUTER=1800;
-
-const int JUNCTION_SPEED=1000;
+const int LEFT_TURN_INNER=500;
+const int LEFT_TURN_OUTER=1800;
+const int RIGHT_TURN_INNER=300;
+const int RIGHT_TURN_OUTER=1800;
+const int UTURN_SPEED=1800;
 
 const float KP=0.88f;
 const float KD=1.28f;
 
 const int BRANCH_STRENGTH=450;
 const int JUNCTION_CONFIRM=3;
-const int TURN_START_TIME=100;
 const int TURN_TIMEOUT=1200;
+const int UTURN_TIMEOUT=1400;
 const int DEAD_END_CONFIRM=20;
 
 int lastError=0;
 int junctionCount=0;
 int deadEndCount=0;
-
 unsigned long lastJunction=0;
 
 int readLinePosition(bool &lineFound){
@@ -52,9 +51,7 @@ int readLinePosition(bool &lineFound){
 
     if(span<=0) continue;
 
-    int strength=
-      (int)((long)(blackReading[i]-raw)*1000/span);
-
+    int strength=(int)((long)(blackReading[i]-raw)*1000/span);
     strength=constrain(strength,0,1000);
 
     if(strength>250){
@@ -65,8 +62,7 @@ int readLinePosition(bool &lineFound){
 
   lineFound=strengthSum>0;
 
-  if(!lineFound)
-    return -1;
+  if(!lineFound) return -1;
 
   return (int)(weightedSum/strengthSum);
 }
@@ -74,14 +70,12 @@ int readLinePosition(bool &lineFound){
 void setMotor(int pwmPin,int in1,int in2,int speed,bool reversed){
   speed=constrain(speed,-PWM_MAX,PWM_MAX);
 
-  if(reversed)
-    speed=-speed;
+  if(reversed) speed=-speed;
 
   if(speed>=0){
     digitalWrite(in1,HIGH);
     digitalWrite(in2,LOW);
-  }
-  else{
+  }else{
     digitalWrite(in1,LOW);
     digitalWrite(in2,HIGH);
   }
@@ -89,32 +83,27 @@ void setMotor(int pwmPin,int in1,int in2,int speed,bool reversed){
   ledcWrite(pwmPin,abs(speed));
 }
 
-void drive(int leftSpeed,int rightSpeed){
+void leftMotor(int speed){
+  setMotor(PWMA,AIN1,AIN2,speed,LEFT_MOTOR_REVERSED);
+}
 
+void rightMotor(int speed){
+  setMotor(PWMB,BIN1,BIN2,speed,RIGHT_MOTOR_REVERSED);
+}
+
+void drive(int leftSpeed,int rightSpeed){
   rightSpeed=(int)(rightSpeed*RIGHT_MOTOR_GAIN);
 
   leftSpeed=constrain(leftSpeed,-PWM_MAX,PWM_MAX);
   rightSpeed=constrain(rightSpeed,-PWM_MAX,PWM_MAX);
 
-  setMotor(
-    PWMA,
-    AIN1,
-    AIN2,
-    leftSpeed,
-    LEFT_MOTOR_REVERSED
-  );
-
-  setMotor(
-    PWMB,
-    BIN1,
-    BIN2,
-    rightSpeed,
-    RIGHT_MOTOR_REVERSED
-  );
+  leftMotor(leftSpeed);
+  rightMotor(rightSpeed);
 }
 
 void stopMotors(){
-  drive(0,0);
+  leftMotor(0);
+  rightMotor(0);
 }
 
 void readRaw(int raw[8]){
@@ -125,11 +114,9 @@ void readRaw(int raw[8]){
 int whiteStrength(int i,int raw){
   int span=blackReading[i]-whiteReading[i];
 
-  if(span<=0)
-    return 0;
+  if(span<=0) return 0;
 
-  int strength=
-    (int)((long)(blackReading[i]-raw)*1000/span);
+  int strength=(int)((long)(blackReading[i]-raw)*1000/span);
 
   return constrain(strength,0,1000);
 }
@@ -152,17 +139,15 @@ bool linePresent(int raw[8]){
 }
 
 bool leftBranch(int raw[8]){
-  return
-    whiteStrength(0,raw[0])>BRANCH_STRENGTH ||
-    whiteStrength(1,raw[1])>BRANCH_STRENGTH ||
-    whiteStrength(2,raw[2])>BRANCH_STRENGTH;
+  return whiteStrength(0,raw[0])>BRANCH_STRENGTH ||
+         whiteStrength(1,raw[1])>BRANCH_STRENGTH ||
+         whiteStrength(2,raw[2])>BRANCH_STRENGTH;
 }
 
 bool rightBranch(int raw[8]){
-  return
-    whiteStrength(5,raw[5])>BRANCH_STRENGTH ||
-    whiteStrength(6,raw[6])>BRANCH_STRENGTH ||
-    whiteStrength(7,raw[7])>BRANCH_STRENGTH;
+  return whiteStrength(5,raw[5])>BRANCH_STRENGTH ||
+         whiteStrength(6,raw[6])>BRANCH_STRENGTH ||
+         whiteStrength(7,raw[7])>BRANCH_STRENGTH;
 }
 
 bool junctionDetected(){
@@ -197,23 +182,12 @@ void followLine(){
 
   int error=position-3500;
   int derivative=error-lastError;
-
   lastError=error;
 
-  int correction=
-    (int)(KP*error+KD*derivative);
+  int correction=(int)(KP*error+KD*derivative);
 
-  int leftSpeed=constrain(
-    BASE_SPEED+correction,
-    -PWM_MAX,
-    PWM_MAX
-  );
-
-  int rightSpeed=constrain(
-    BASE_SPEED-correction,
-    -PWM_MAX,
-    PWM_MAX
-  );
+  int leftSpeed=constrain(BASE_SPEED+correction,-PWM_MAX,PWM_MAX);
+  int rightSpeed=constrain(BASE_SPEED-correction,-PWM_MAX,PWM_MAX);
 
   drive(leftSpeed,rightSpeed);
 
@@ -233,58 +207,97 @@ char inspectJunction(){
     whiteStrength(4,raw[4])>BRANCH_STRENGTH ||
     whiteStrength(5,raw[5])>BRANCH_STRENGTH;
 
-  if(left)
-    return 'L';
-
-  if(straight)
-    return 'S';
-
-  if(right)
-    return 'R';
+  if(left) return 'L';
+  if(straight) return 'S';
+  if(right) return 'R';
 
   return 'B';
 }
 
-void smoothTurn(bool left){
+void leftTurn(){
   int raw[8];
-
   unsigned long start=millis();
-
-  if(left)
-    drive(TURN_INNER,TURN_OUTER);
-  else
-    drive(TURN_OUTER,TURN_INNER);
-
-  delay(TURN_START_TIME);
+  bool lineLost=false;
 
   while(millis()-start<TURN_TIMEOUT){
-
     readRaw(raw);
+    bool center=centerWhite(raw);
 
-    int position;
-    bool lineFound;
+    if(!lineLost){
+      if(!center) lineLost=true;
+    }else{
+      if(center){
+        bool sideClear=
+          whiteStrength(0,raw[0])<BRANCH_STRENGTH &&
+          whiteStrength(7,raw[7])<BRANCH_STRENGTH;
 
-    position=readLinePosition(lineFound);
-
-    bool sideLine=
-      whiteStrength(0,raw[0])>BRANCH_STRENGTH ||
-      whiteStrength(7,raw[7])>BRANCH_STRENGTH;
-
-    if(lineFound &&
-       position>2700 &&
-       position<4300 &&
-       !sideLine){
-
-      stopMotors();
-      delay(20);
-      return;
+        if(sideClear){
+          stopMotors();
+          delay(10);
+          return;
+        }
+      }
     }
 
-    if(left)
-      drive(TURN_INNER,TURN_OUTER);
-    else
-      drive(TURN_OUTER,TURN_INNER);
+    drive(LEFT_TURN_INNER,LEFT_TURN_OUTER);
+    delay(3);
+  }
 
+  stopMotors();
+}
+
+void rightTurn(){
+  int raw[8];
+  unsigned long start=millis();
+  bool lineLost=false;
+
+  while(millis()-start<TURN_TIMEOUT){
+    readRaw(raw);
+    bool center=centerWhite(raw);
+
+    if(!lineLost){
+      if(!center) lineLost=true;
+    }else{
+      if(center){
+        bool sideClear=
+          whiteStrength(0,raw[0])<BRANCH_STRENGTH &&
+          whiteStrength(7,raw[7])<BRANCH_STRENGTH;
+
+        if(sideClear){
+          stopMotors();
+          delay(10);
+          return;
+        }
+      }
+    }
+
+    drive(RIGHT_TURN_OUTER,RIGHT_TURN_INNER);
+    delay(3);
+  }
+
+  stopMotors();
+}
+
+void uTurn(){
+  int raw[8];
+  unsigned long start=millis();
+  bool lineLost=false;
+
+  while(millis()-start<UTURN_TIMEOUT){
+    readRaw(raw);
+    bool center=centerWhite(raw);
+
+    if(!lineLost){
+      if(!center) lineLost=true;
+    }else{
+      if(center){
+        stopMotors();
+        delay(10);
+        return;
+      }
+    }
+
+    drive(-UTURN_SPEED,UTURN_SPEED);
     delay(3);
   }
 
@@ -295,16 +308,13 @@ void handleJunction(){
   char direction=inspectJunction();
 
   if(direction=='L'){
-    smoothTurn(true);
-  }
-  else if(direction=='S'){
+    leftTurn();
+  }else if(direction=='S'){
     followLine();
-  }
-  else if(direction=='R'){
-    smoothTurn(false);
-  }
-  else{
-    smoothTurn(true);
+  }else if(direction=='R'){
+    rightTurn();
+  }else{
+    uTurn();
   }
 
   lastJunction=millis();
@@ -312,33 +322,9 @@ void handleJunction(){
 
 void handleDeadEnd(){
   stopMotors();
-  delay(30);
-
-  drive(-TURN_OUTER,TURN_OUTER);
-
-  delay(250);
-
-  unsigned long start=millis();
-
-  while(millis()-start<TURN_TIMEOUT){
-
-    int raw[8];
-    readRaw(raw);
-
-    bool center=centerWhite(raw);
-
-    if(center){
-      stopMotors();
-      delay(20);
-      return;
-    }
-
-    drive(-TURN_OUTER,TURN_OUTER);
-
-    delay(3);
-  }
-
-  stopMotors();
+  delay(20);
+  uTurn();
+  lastJunction=millis();
 }
 
 void setup(){
@@ -351,18 +337,17 @@ void setup(){
   pinMode(BIN2,OUTPUT);
   pinMode(STBY,OUTPUT);
 
-  bool leftPwmOk=
-    ledcAttach(PWMA,PWM_FREQ,PWM_BITS);
-
-  bool rightPwmOk=
-    ledcAttach(PWMB,PWM_FREQ,PWM_BITS);
+  bool leftOK=ledcAttach(PWMA,PWM_FREQ,PWM_BITS);
+  bool rightOK=ledcAttach(PWMB,PWM_FREQ,PWM_BITS);
 
   digitalWrite(STBY,HIGH);
-  drive(0,0);
+  stopMotors();
 
-  if(!leftPwmOk||!rightPwmOk){
+  if(!leftOK||!rightOK){
+    Serial.println("PWM SETUP FAILED");
+
     while(true){
-      drive(0,0);
+      stopMotors();
       delay(100);
     }
   }
@@ -389,10 +374,9 @@ void loop(){
   deadEndCount=0;
 
   if(millis()-lastJunction>300){
-
     if(junctionDetected()){
       handleJunction();
-      delay(50);
+      delay(30);
       return;
     }
   }
